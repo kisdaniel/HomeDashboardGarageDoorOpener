@@ -16,6 +16,7 @@
 char mqtt_server[40];
 char mqtt_port[6] = "1883";
 char device_name[34] = "GarageDoorOpener";
+char open_close_timeout[6] = "45000";
 
 char inTopic[60];
 char outTopic[60];
@@ -32,6 +33,7 @@ PubSubClient client(espClient);
 WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
 WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
 WiFiManagerParameter custom_device_name("deviceName", "Device name", device_name, 32);
+WiFiManagerParameter custom_open_close_timeout("openCloseTimeout", "Opening/closing in millisec", open_close_timeout, 6);
 
 GarageDoorState currentState = GD_UNKNOWN;
 GarageDoorState previousState = GD_UNKNOWN;
@@ -83,11 +85,11 @@ void turnLight(boolean on)
 {
   if (disableLamp)
   {
-    digitalWrite(LIGHT_SWITCH_PIN, HIGH);
+    digitalWrite(LIGHT_RELAY_PIN, HIGH);
   }
   else
   {
-    digitalWrite(LIGHT_SWITCH_PIN, on ? LOW : HIGH);
+    digitalWrite(LIGHT_RELAY_PIN, on ? LOW : HIGH);
   }
 }
 
@@ -222,7 +224,15 @@ void checkButtonCommands()
 {
   bool openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
   bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
+  bool photocell = digitalRead(PHOTOCELL_INPUT_PIN) == HIGH;
+
   long now = millis();
+
+  if (photocell && currentState == GD_CLOSING) {
+    stop(GD_PARTIALLY_OPENED);
+    closePressed = false;
+  }
+
   if ((previousOpenPressed != openPressed) || (previousClosePressed != closePressed))
   {
     if (previousChangeInMillis + 500 < now)
@@ -270,11 +280,15 @@ void saveConfigCallback()
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
   strcpy(device_name, custom_device_name.getValue());
+  strcpy(open_close_timeout, custom_open_close_timeout.getValue());
 
   JsonObject &json = jsonBuffer.createObject();
   json["mqtt_server"] = mqtt_server;
   json["mqtt_port"] = mqtt_port;
   json["device_name"] = device_name;
+  json["open_close_timeout"] = open_close_timeout;
+
+  openAndClosingTimeout = atoi(open_close_timeout);
 
   File configFile = SPIFFS.open("/config.json", "w");
   if (!configFile)
@@ -316,6 +330,9 @@ void loadConfig()
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(mqtt_port, json["mqtt_port"]);
           strcpy(device_name, json["device_name"]);
+          strcpy(open_close_timeout, json["open_close_timeout"]);
+          openAndClosingTimeout = atoi(open_close_timeout);
+          if (openAndClosingTimeout == 0) { openAndClosingTimeout = 15000; }
         }
         else
         {
@@ -464,14 +481,15 @@ void initPins()
   Serial.println("init pins");
   pinMode(OPEN_MOTOR_PIN, OUTPUT);
   pinMode(CLOSE_MOTOR_PIN, OUTPUT);
-  pinMode(LIGHT_SWITCH_PIN, OUTPUT);
+  pinMode(LIGHT_RELAY_PIN, OUTPUT);
 
+  pinMode(PHOTOCELL_INPUT_PIN, INPUT);
   pinMode(OPEN_SWITCH_PIN, INPUT);
   pinMode(CLOSE_SWITCH_PIN, INPUT);
 
   digitalWrite(OPEN_MOTOR_PIN, HIGH);
   digitalWrite(CLOSE_MOTOR_PIN, HIGH);
-  digitalWrite(LIGHT_SWITCH_PIN, HIGH);
+  digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
   delay(2000);
   bool openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
@@ -480,17 +498,17 @@ void initPins()
   {
 
     Serial.println("open and close pressed...");
-    digitalWrite(LIGHT_SWITCH_PIN, LOW);
+    digitalWrite(LIGHT_RELAY_PIN, LOW);
     delay(1000);
-    digitalWrite(LIGHT_SWITCH_PIN, HIGH);
+    digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
     openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
     closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
     if (openPressed && closePressed)
     {
-      digitalWrite(LIGHT_SWITCH_PIN, LOW);
+      digitalWrite(LIGHT_RELAY_PIN, LOW);
       delay(200);
-      digitalWrite(LIGHT_SWITCH_PIN, HIGH);
+      digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
       Serial.println("reset requested...");
       wifiManager.resetSettings();
@@ -500,21 +518,17 @@ void initPins()
 
 void setup()
 {
-
   Serial.begin(115200);
 
   Serial.println("starting...");
 
   //clean FS, for testing
-  //SPIFFS.format();
+  SPIFFS.format();
 
   //read configuration from FS json
   Serial.println("mounting FS...");
 
-  // The extra parameters to be configured (can be either global or just in the setup)
-  // After connecting, parameter.getValue() will get you the configured value
-  // id/name placeholder/prompt default length
-
+  
   loadConfig();
 
   //WiFiManager
@@ -530,6 +544,7 @@ void setup()
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_port);
   wifiManager.addParameter(&custom_device_name);
+  wifiManager.addParameter(&custom_open_close_timeout);
 
   WiFi.hostname(device_name);
   wifiManager.setConfigPortalTimeout(60 * 3);
