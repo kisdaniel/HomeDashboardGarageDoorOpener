@@ -222,10 +222,15 @@ void calculateOpenStateAndStopIfNecessary()
 
 void checkButtonCommands()
 {
-  bool openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
-  bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
-  bool photocell = digitalRead(PHOTOCELL_INPUT_PIN) == HIGH;
-
+  bool openPressed = digitalRead(OPEN_SWITCH_PIN) == PRESSED;
+  bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == PRESSED;
+  bool photocell = digitalRead(PHOTOCELL_INPUT_PIN) == PRESSED;
+  
+  //Serial.print(openPressed ? "open pressed,   " : "open unpressed, ");
+  //Serial.print(closePressed ? "close pressed,   " : "close unpressed, ");
+  //Serial.println(photocell ? "photocell pressed" : "photocell unpressed");
+  //delay(500);
+  
   long now = millis();
 
   if (photocell && currentState == GD_CLOSING) {
@@ -483,14 +488,15 @@ void initPins()
   pinMode(CLOSE_MOTOR_PIN, OUTPUT);
   pinMode(LIGHT_RELAY_PIN, OUTPUT);
 
-  pinMode(PHOTOCELL_INPUT_PIN, INPUT);
-  pinMode(OPEN_SWITCH_PIN, INPUT);
-  pinMode(CLOSE_SWITCH_PIN, INPUT);
+  pinMode(PHOTOCELL_INPUT_PIN, INPUT_PINMODE);
+  pinMode(OPEN_SWITCH_PIN, INPUT_PINMODE);
+  pinMode(CLOSE_SWITCH_PIN, INPUT_PINMODE);
 
   digitalWrite(OPEN_MOTOR_PIN, HIGH);
   digitalWrite(CLOSE_MOTOR_PIN, HIGH);
   digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
+  Serial.println("waiting 2 sec...");
   delay(2000);
   bool openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
   bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
@@ -502,8 +508,8 @@ void initPins()
     delay(1000);
     digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
-    openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
-    closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
+    openPressed = digitalRead(OPEN_SWITCH_PIN) == PRESSED;
+    closePressed = digitalRead(CLOSE_SWITCH_PIN) == PRESSED;
     if (openPressed && closePressed)
     {
       digitalWrite(LIGHT_RELAY_PIN, LOW);
@@ -511,9 +517,15 @@ void initPins()
       digitalWrite(LIGHT_RELAY_PIN, HIGH);
 
       Serial.println("reset requested...");
+      // SPIFFS.format();
       wifiManager.resetSettings();
     }
   }
+
+
+  //attachInterrupt(digitalPinToInterrupt(PHOTOCELL_INPUT_PIN), photocellpinChange, CHANGE);
+  //attachInterrupt(digitalPinToInterrupt(OPEN_SWITCH_PIN), openSwitch_PIN, CHANGE);
+
 }
 
 void setup()
@@ -523,7 +535,7 @@ void setup()
   Serial.println("starting...");
 
   //clean FS, for testing
-  SPIFFS.format();
+  // SPIFFS.format();
 
   //read configuration from FS json
   Serial.println("mounting FS...");
