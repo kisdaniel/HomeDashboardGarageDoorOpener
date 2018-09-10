@@ -56,7 +56,9 @@ long lastStateChange = 0;
 long previousChangeInMillis = 0;
 long lastStateSent = 0;
 
-long disableLamp = 0;
+bool disableLamp = false;
+bool prevObstacleOnPhotocell = false;
+bool obstacleOnPhotocell = false;
 
 String getDoorStateAsString(GarageDoorState state)
 {
@@ -225,20 +227,22 @@ void checkButtonCommands()
   bool openPressed = digitalRead(OPEN_SWITCH_PIN) == PRESSED;
   bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == PRESSED;
   bool photocell = digitalRead(PHOTOCELL_INPUT_PIN) == PRESSED;
-  
+
   //Serial.print(openPressed ? "open pressed,   " : "open unpressed, ");
   //Serial.print(closePressed ? "close pressed,   " : "close unpressed, ");
   //Serial.println(photocell ? "photocell pressed" : "photocell unpressed");
   //delay(500);
-  
+
   long now = millis();
 
-  if (photocell && currentState == GD_CLOSING) {
+  obstacleOnPhotocell = photocell;
+
+  if (photocell && currentState == GD_CLOSING)
+  {
     stop(GD_PARTIALLY_OPENED);
     closePressed = false;
   }
-
-  if ((previousOpenPressed != openPressed) || (previousClosePressed != closePressed))
+  else if ((previousOpenPressed != openPressed) || (previousClosePressed != closePressed))
   {
     if (previousChangeInMillis + 500 < now)
     {
@@ -274,6 +278,10 @@ void checkButtonCommands()
       previousOpenPressed = openPressed;
       previousChangeInMillis = now;
     }
+  }
+  else if (obstacleOnPhotocell != prevObstacleOnPhotocell)
+  {
+    publishState();
   }
 }
 
@@ -337,7 +345,10 @@ void loadConfig()
           strcpy(device_name, json["device_name"]);
           strcpy(open_close_timeout, json["open_close_timeout"]);
           openAndClosingTimeout = atoi(open_close_timeout);
-          if (openAndClosingTimeout == 0) { openAndClosingTimeout = 15000; }
+          if (openAndClosingTimeout == 0)
+          {
+            openAndClosingTimeout = 15000;
+          }
         }
         else
         {
@@ -369,40 +380,68 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   }
   Serial.println();
 
-  JsonObject &inputObject = jsonBuffer.parseObject(payload);
-  const char *command = inputObject["command"];
-  if (strcmp(command, "open") == 0)
+  if (strcmp(topic, MQTT_TOPIC_REGISTRATION) == 0)
   {
-    open();
+    if (strcmp((char*)payload, "{}") == 0) {
+      // resends a registration message
+      deviceRegistration();
+    } else {
+      Serial.println("skip other device registration");
+    }
   }
-  else if (strcmp(command, "close") == 0)
+  else
   {
-    close();
+
+    JsonObject &inputObject = jsonBuffer.parseObject(payload);
+    const char *command = inputObject["command"];
+    if (strcmp(command, "open") == 0)
+    {
+      open();
+    }
+    else if (strcmp(command, "close") == 0)
+    {
+      close();
+    }
+    else if (strcmp(command, "lighton") == 0)
+    {
+      keeplightOnUntil = atoi(inputObject["timeoutInMillis"]) + millis();
+      turnLight(true);
+    }
+    else if (strcmp(command, "lightoff") == 0)
+    {
+      turnLight(false);
+    }
+    else if (strcmp(command, "disableLight") == 0)
+    {
+      disableLamp = true;
+      turnLight(false);
+    }
+    else if (strcmp(command, "enableLight") == 0)
+    {
+      disableLamp = false;
+    }
+    else if (strcmp(command, "stop") == 0)
+    {
+      stop(GD_PARTIALLY_OPENED);
+    }
+    else if (strcmp(command, "heartbeat") == 0)
+    {
+      publishState();
+    }
+    jsonBuffer.clear();
   }
-  else if (strcmp(command, "lighton") == 0)
-  {
-    keeplightOnUntil = atoi(inputObject["timeoutInMillis"]) + millis();
-    turnLight(true);
-  }
-  else if (strcmp(command, "lightoff") == 0)
-  {
-    turnLight(false);
-  }
-  else if (strcmp(command, "disableLight") == 0)
-  {
-    disableLamp = 1;
-    turnLight(false);
-  }
-  else if (strcmp(command, "enableLight") == 0)
-  {
-    disableLamp = 0;
-  }
-  else if (strcmp(command, "stop") == 0)
-  {
-    stop(GD_PARTIALLY_OPENED);
-  }
-  Serial.println(command);
-  jsonBuffer.clear();
+}
+
+void deviceRegistration()
+{
+  JsonObject &json = jsonBuffer.createObject();
+  json["name"] = device_name;
+  json["type"] = "GarageDoorOpener";
+
+  char jsonChar[160];
+  json.printTo((char *)jsonChar, json.measureLength() + 1);
+
+  client.publish(MQTT_TOPIC_REGISTRATION, jsonChar);
 }
 
 void connectToMqttIfNotConnected()
@@ -410,24 +449,20 @@ void connectToMqttIfNotConnected()
   if (!client.connected())
   {
     long now = millis();
-    if (lastConnectRetry + 10000 < now)
+    if (lastConnectRetry + 30000 < now)
     {
       client.setCallback(mqttCallback);
       client.setServer(mqtt_server, atoi(mqtt_port));
+
+      analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTING_TO_MQTT);
       if (client.connect(device_name))
       {
         lastConnectRetry = millis();
         Serial.println("Connected to MQTT");
         mqttFailedBefore = false;
 
-        JsonObject &json = jsonBuffer.createObject();
-        json["name"] = device_name;
-        json["type"] = "GarageDoorOpener";
-
-        char jsonChar[160];
-        json.printTo((char *)jsonChar, json.measureLength() + 1);
-
-        client.publish("/homedashboard/device/registration", jsonChar);
+        deviceRegistration();
+        client.subscribe(MQTT_TOPIC_REGISTRATION);
         strcpy(inTopic, "/homedashboard/");
         strcat(inTopic, device_name);
         strcpy(outTopic, inTopic);
@@ -438,9 +473,11 @@ void connectToMqttIfNotConnected()
         Serial.print("Subscribe to ");
         Serial.println(inTopic);
         publishState();
+        analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTED);
       }
       else
       {
+        analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
         lastConnectRetry = millis();
         if (!mqttFailedBefore)
         {
@@ -461,24 +498,32 @@ void connectToMqttIfNotConnected()
 
 void publishState()
 {
-  JsonObject &json = jsonBuffer.createObject();
-  json["name"] = device_name;
-  json["state"] = getDoorStateAsString(currentState);
-  char position[10];
-  itoa(openState, position, 10);
-  json["position"] = position;
-  json["lightDisabled"] = disableLamp ? "1" : "0";
+  if (client.connected())
+  {
+    prevObstacleOnPhotocell = obstacleOnPhotocell;
+    JsonObject &json = jsonBuffer.createObject();
+    json["name"] = device_name;
+    json["state"] = getDoorStateAsString(currentState);
+    char position[10];
+    itoa(openState, position, 10);
+    json["position"] = position;
+    json["lightDisabled"] = disableLamp ? "1" : "0";
+    json["obstacleOnPhotocell"] = obstacleOnPhotocell ? "1" : "0";
 
-  char jsonChar[150];
-  json.printTo((char *)jsonChar, json.measureLength() + 1);
+    char jsonChar[150];
+    json.printTo((char *)jsonChar, json.measureLength() + 1);
 
-  client.publish(outTopic, jsonChar);
-  // Serial.println(jsonChar);
-  // Serial.println(openState);
+    client.publish(outTopic, jsonChar);
 
-  jsonBuffer.clear();
+    Serial.print("publish state :");
+    Serial.println(jsonChar);
+    // Serial.println(jsonChar);
+    // Serial.println(openState);
 
-  lastStateSent = millis();
+    jsonBuffer.clear();
+
+    lastStateSent = millis();
+  }
 }
 
 void initPins()
@@ -487,6 +532,7 @@ void initPins()
   pinMode(OPEN_MOTOR_PIN, OUTPUT);
   pinMode(CLOSE_MOTOR_PIN, OUTPUT);
   pinMode(LIGHT_RELAY_PIN, OUTPUT);
+  pinMode(NETWORK_STATUS_PIN, OUTPUT);
 
   pinMode(PHOTOCELL_INPUT_PIN, INPUT_PINMODE);
   pinMode(OPEN_SWITCH_PIN, INPUT_PINMODE);
@@ -495,37 +541,52 @@ void initPins()
   digitalWrite(OPEN_MOTOR_PIN, HIGH);
   digitalWrite(CLOSE_MOTOR_PIN, HIGH);
   digitalWrite(LIGHT_RELAY_PIN, HIGH);
+  analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_NOT_CONNECTED);
 
   Serial.println("waiting 2 sec...");
   delay(2000);
-  bool openPressed = digitalRead(OPEN_SWITCH_PIN) == HIGH;
-  bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == HIGH;
+  bool openPressed = digitalRead(OPEN_SWITCH_PIN) == PRESSED;
+  bool closePressed = digitalRead(CLOSE_SWITCH_PIN) == PRESSED;
   if (openPressed && closePressed)
   {
 
     Serial.println("open and close pressed...");
-    digitalWrite(LIGHT_RELAY_PIN, LOW);
-    delay(1000);
-    digitalWrite(LIGHT_RELAY_PIN, HIGH);
+    flashLedIn();
+    flashLedOut();
 
     openPressed = digitalRead(OPEN_SWITCH_PIN) == PRESSED;
     closePressed = digitalRead(CLOSE_SWITCH_PIN) == PRESSED;
     if (openPressed && closePressed)
     {
-      digitalWrite(LIGHT_RELAY_PIN, LOW);
-      delay(200);
-      digitalWrite(LIGHT_RELAY_PIN, HIGH);
+      flashLedIn();
+      flashLedOut();
 
       Serial.println("reset requested...");
       // SPIFFS.format();
       wifiManager.resetSettings();
     }
   }
-
+  analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_NOT_CONNECTED);
 
   //attachInterrupt(digitalPinToInterrupt(PHOTOCELL_INPUT_PIN), photocellpinChange, CHANGE);
   //attachInterrupt(digitalPinToInterrupt(OPEN_SWITCH_PIN), openSwitch_PIN, CHANGE);
+}
 
+void flashLedOut()
+{
+  for (int i = 1023; i > 0; i--)
+  {
+    analogWrite(NETWORK_STATUS_PIN, i);
+    delay(1);
+  }
+}
+void flashLedIn()
+{
+  for (int i = 0; i < 1024; i++)
+  {
+    analogWrite(NETWORK_STATUS_PIN, i);
+    delay(1);
+  }
 }
 
 void setup()
@@ -540,7 +601,6 @@ void setup()
   //read configuration from FS json
   Serial.println("mounting FS...");
 
-  
   loadConfig();
 
   //WiFiManager
@@ -583,9 +643,11 @@ void loop()
 {
   if (!WiFi.isConnected() && currentState != GD_OPENING && currentState != GD_CLOSING)
   {
+    analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_NOT_CONNECTED);
     Serial.println("Wifi connection lost...");
     if (WiFi.reconnect())
     {
+      analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
       Serial.print("successfully reconnected, local ip:");
       Serial.println(WiFi.localIP());
       connectToMqttIfNotConnected();
