@@ -379,10 +379,11 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     Serial.print((char)payload[i]);
   }
   Serial.println();
+  Serial.println((char*)payload);
 
   if (strcmp(topic, MQTT_TOPIC_REGISTRATION) == 0)
   {
-    if (strcmp((char*)payload, "{}") == 0) {
+    if (length == 2 && strncmp((char*)payload, "{}", length) == 0) {
       // resends a registration message
       deviceRegistration();
     } else {
@@ -391,7 +392,6 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
   }
   else
   {
-
     JsonObject &inputObject = jsonBuffer.parseObject(payload);
     const char *command = inputObject["command"];
     if (strcmp(command, "open") == 0)
