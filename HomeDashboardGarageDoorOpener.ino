@@ -1,4 +1,9 @@
 #include <FS.h> //this needs to be first, or it all crashes and burns...
+
+// the following override is not working due to this issue: https://github.com/knolleary/pubsubclient/pull/282
+// #define MQTT_MAX_PACKET_SIZE    254
+// you need to change PubSubClient.h MQTT_MAX_PACKET_SIZE to 254 
+
 #include "HomeDashboardGarageDoorOpener.h"
 
 #include <ESP8266WiFi.h> //https://github.com/esp8266/Arduino
@@ -10,7 +15,11 @@
 
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 
+
+
 #include <PubSubClient.h>
+
+
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char mqtt_server[40];
@@ -379,7 +388,6 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     Serial.print((char)payload[i]);
   }
   Serial.println();
-  Serial.println((char*)payload);
 
   if (strcmp(topic, MQTT_TOPIC_REGISTRATION) == 0)
   {
@@ -440,8 +448,10 @@ void deviceRegistration()
 
   char jsonChar[160];
   json.printTo((char *)jsonChar, json.measureLength() + 1);
-
-  client.publish(MQTT_TOPIC_REGISTRATION, jsonChar);
+  Serial.print("Register device (");
+  Serial.print(MQTT_TOPIC_REGISTRATION);
+  Serial.print("), result: ");
+  Serial.println(client.publish(MQTT_TOPIC_REGISTRATION, jsonChar));
 }
 
 void connectToMqttIfNotConnected()
@@ -507,16 +517,21 @@ void publishState()
     char position[10];
     itoa(openState, position, 10);
     json["position"] = position;
-    json["lightDisabled"] = disableLamp ? "1" : "0";
-    json["obstacleOnPhotocell"] = obstacleOnPhotocell ? "1" : "0";
+    json["lightDisabled"] = disableLamp ? true : false;
+    json["photocell"] = obstacleOnPhotocell ? true : false;
 
-    char jsonChar[150];
+    char jsonChar[200];
     json.printTo((char *)jsonChar, json.measureLength() + 1);
+    int result = client.publish(outTopic, jsonChar, json.measureLength());
 
-    client.publish(outTopic, jsonChar);
+    // Serial.print("publish state to topic:");
+    // Serial.print(outTopic);
+    // Serial.print(", length: ");
+    // Serial.print(json.measureLength());
+     
+    // Serial.print(", result: ");
+    // Serial.println(result);
 
-    Serial.print("publish state :");
-    Serial.println(jsonChar);
     // Serial.println(jsonChar);
     // Serial.println(openState);
 
@@ -593,6 +608,7 @@ void setup()
 {
   Serial.begin(115200);
 
+  Serial.println(MQTT_MAX_PACKET_SIZE);
   Serial.println("starting...");
 
   //clean FS, for testing

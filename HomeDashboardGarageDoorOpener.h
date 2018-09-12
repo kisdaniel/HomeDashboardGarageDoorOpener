@@ -4,13 +4,16 @@
 
 #define SERIAL_BAUD 115200
 
+
+
 // Pin layout
 
+#define LIGHT_RELAY_PIN     D0  // The pin that turns the light on / off
 #define OPEN_SWITCH_PIN     D1  // input button to open the door
 #define CLOSE_SWITCH_PIN    D2  // input button to close the door
 
 // D3 is reserved during programming
-#define LIGHT_RELAY_PIN     D4  // The pin that turns the light on / off
+// D4 unused
 #define OPEN_MOTOR_PIN      D5  // The pin that activates the open door motor
 #define CLOSE_MOTOR_PIN     D6  // The pin that activates the close door motor 
 #define PHOTOCELL_INPUT_PIN D7  // Stops closing 
