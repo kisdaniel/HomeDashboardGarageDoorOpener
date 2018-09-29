@@ -2,7 +2,7 @@
 
 // the following override is not working due to this issue: https://github.com/knolleary/pubsubclient/pull/282
 // #define MQTT_MAX_PACKET_SIZE    254
-// you need to change PubSubClient.h MQTT_MAX_PACKET_SIZE to 254 
+// you need to change PubSubClient.h MQTT_MAX_PACKET_SIZE to 254
 
 #include "HomeDashboardGarageDoorOpener.h"
 
@@ -15,15 +15,13 @@
 
 #include <ArduinoJson.h> //https://github.com/bblanchon/ArduinoJson
 
-
-
 #include <PubSubClient.h>
-
-
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char mqtt_server[40];
 char mqtt_port[6] = "1883";
+char mqtt_user[100];
+char mqtt_password[100];
 char device_name[34] = "GarageDoorOpener";
 char open_close_timeout[6] = "45000";
 
@@ -41,6 +39,8 @@ PubSubClient client(espClient);
 
 WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, 40);
 WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, 6);
+WiFiManagerParameter custom_mqtt_user("user", "mqtt user", mqtt_user, 100);
+WiFiManagerParameter custom_mqtt_password("password", "mqtt password", mqtt_password, 100);
 WiFiManagerParameter custom_device_name("deviceName", "Device name", device_name, 32);
 WiFiManagerParameter custom_open_close_timeout("openCloseTimeout", "Opening/closing in millisec", open_close_timeout, 6);
 
@@ -68,6 +68,7 @@ long lastStateSent = 0;
 bool disableLamp = false;
 bool prevObstacleOnPhotocell = false;
 bool obstacleOnPhotocell = false;
+bool lamp = false;
 
 String getDoorStateAsString(GarageDoorState state)
 {
@@ -96,10 +97,12 @@ void turnLight(boolean on)
 {
   if (disableLamp)
   {
+    lamp = false;
     digitalWrite(LIGHT_RELAY_PIN, HIGH);
   }
   else
   {
+    lamp = on;
     digitalWrite(LIGHT_RELAY_PIN, on ? LOW : HIGH);
   }
 }
@@ -301,12 +304,17 @@ void saveConfigCallback()
 
   strcpy(mqtt_server, custom_mqtt_server.getValue());
   strcpy(mqtt_port, custom_mqtt_port.getValue());
+  strcpy(mqtt_user, custom_mqtt_user.getValue());
+  strcpy(mqtt_password, custom_mqtt_password.getValue());
   strcpy(device_name, custom_device_name.getValue());
   strcpy(open_close_timeout, custom_open_close_timeout.getValue());
 
   JsonObject &json = jsonBuffer.createObject();
   json["mqtt_server"] = mqtt_server;
   json["mqtt_port"] = mqtt_port;
+  json["mqtt_user"] = mqtt_user;
+  json["mqtt_password"] = mqtt_password;
+
   json["device_name"] = device_name;
   json["open_close_timeout"] = open_close_timeout;
 
@@ -391,10 +399,13 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
 
   if (strcmp(topic, MQTT_TOPIC_REGISTRATION) == 0)
   {
-    if (length == 2 && strncmp((char*)payload, "{}", length) == 0) {
+    if (length == 2 && strncmp((char *)payload, "{}", length) == 0)
+    {
       // resends a registration message
       deviceRegistration();
-    } else {
+    }
+    else
+    {
       Serial.println("skip other device registration");
     }
   }
@@ -412,17 +423,32 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     }
     else if (strcmp(command, "lighton") == 0)
     {
-      keeplightOnUntil = atoi(inputObject["timeoutInMillis"]) + millis();
+      long timeout = atol(inputObject["timeoutInMillis"]);
+      if (timeout > 0)
+      {
+        keeplightOnUntil = timeout + millis();
+      }
+      else
+      {
+        keeplightOnUntil = 0;
+      }
       turnLight(true);
+      publishState();
     }
     else if (strcmp(command, "lightoff") == 0)
     {
+      Serial.println("turn light off");
       turnLight(false);
+      jsonBuffer.clear();
+      Serial.println("publish state");
+      publishState();
     }
     else if (strcmp(command, "disableLight") == 0)
     {
       disableLamp = true;
       turnLight(false);
+      jsonBuffer.clear();
+      publishState();
     }
     else if (strcmp(command, "enableLight") == 0)
     {
@@ -434,7 +460,19 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     }
     else if (strcmp(command, "heartbeat") == 0)
     {
+      jsonBuffer.clear();
       publishState();
+    }
+    else if (strcmp(command, "settings") == 0)
+    {
+      keeplightOnAfterOpeningInMillisec = atoi(inputObject["keeplightOnAfterOpening"]);
+      keeplightOnAfterClosingInMillisec = atoi(inputObject["keeplightOnAfterClosing"]);
+      openAndClosingTimeout = atoi(inputObject["openAndClosingTimeout"]);
+      if (openState > openAndClosingTimeout)
+      {
+        openState = openAndClosingTimeout;
+      }
+      // TODO: save to eprom
     }
     jsonBuffer.clear();
   }
@@ -444,7 +482,7 @@ void deviceRegistration()
 {
   JsonObject &json = jsonBuffer.createObject();
   json["name"] = device_name;
-  json["type"] = "GarageDoorOpener";
+  json["type"] = "Gate";
 
   char jsonChar[160];
   json.printTo((char *)jsonChar, json.measureLength() + 1);
@@ -465,7 +503,19 @@ void connectToMqttIfNotConnected()
       client.setServer(mqtt_server, atoi(mqtt_port));
 
       analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTING_TO_MQTT);
-      if (client.connect(device_name))
+
+      boolean connectResult = false;
+
+      if (strlen(mqtt_user) > 0)
+      {
+        connectResult = client.connect(device_name, mqtt_user, mqtt_password);
+      }
+      else
+      {
+        connectResult = client.connect(device_name);
+      }
+
+      if (connectResult)
       {
         lastConnectRetry = millis();
         Serial.println("Connected to MQTT");
@@ -518,6 +568,7 @@ void publishState()
     itoa(openState, position, 10);
     json["position"] = position;
     json["lightDisabled"] = disableLamp ? true : false;
+    json["light"] = lamp ? true : false;
     json["photocell"] = obstacleOnPhotocell ? true : false;
 
     char jsonChar[200];
@@ -528,7 +579,7 @@ void publishState()
     // Serial.print(outTopic);
     // Serial.print(", length: ");
     // Serial.print(json.measureLength());
-     
+
     // Serial.print(", result: ");
     // Serial.println(result);
 
@@ -612,7 +663,7 @@ void setup()
   Serial.println("starting...");
 
   //clean FS, for testing
-  // SPIFFS.format();
+  //SPIFFS.format();
 
   //read configuration from FS json
   Serial.println("mounting FS...");
@@ -631,6 +682,8 @@ void setup()
   //add all your parameters here
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_port);
+  wifiManager.addParameter(&custom_mqtt_user);
+  wifiManager.addParameter(&custom_mqtt_password);
   wifiManager.addParameter(&custom_device_name);
   wifiManager.addParameter(&custom_open_close_timeout);
 
