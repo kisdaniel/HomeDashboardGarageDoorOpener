@@ -127,9 +127,21 @@ void open()
     openState = 0;
   }
   lastStateChange = millis();
-  stop(GD_PARTIALLY_OPENED);
 
-  digitalWrite(OPEN_MOTOR_PIN, LOW);
+  if (openState >= openAndClosingTimeout)
+  {
+    openState = openAndClosingTimeout;
+    stop(GD_OPEN);
+  }
+  else
+  {
+    if (currentState != GD_OPENING)
+    {
+      stop(GD_PARTIALLY_OPENED);
+      digitalWrite(OPEN_MOTOR_PIN, LOW);
+    }
+  }
+
   // digitalWrite(CLOSE_MOTOR_PIN, HIGH);
   keeplightOnUntil = lastStateChange + keeplightOnAfterOpeningInMillisec;
   turnLight(true);
@@ -148,11 +160,19 @@ void close()
       openState = openAndClosingTimeout;
     }
     lastStateChange = millis();
-    stop(GD_PARTIALLY_OPENED);
-
-    // digitalWrite(OPEN_MOTOR_PIN, HIGH);
-    digitalWrite(CLOSE_MOTOR_PIN, LOW);
-
+    if (openState <= 0)
+    {
+      stop(GD_CLOSED);
+      openState = 0;
+    }
+    else
+    {
+      if (currentState != GD_CLOSING)
+      {
+        stop(GD_PARTIALLY_OPENED);
+        digitalWrite(CLOSE_MOTOR_PIN, LOW);
+      }
+    }
     keeplightOnUntil = lastStateChange + keeplightOnAfterOpeningInMillisec;
     turnLight(true);
 
@@ -334,6 +354,7 @@ void saveConfigCallback()
 
 void loadConfig()
 {
+  Serial.println("mounting FS...");
   if (SPIFFS.begin())
   {
     Serial.println("mounted file system");
@@ -359,6 +380,8 @@ void loadConfig()
 
           strcpy(mqtt_server, json["mqtt_server"]);
           strcpy(mqtt_port, json["mqtt_port"]);
+          strcpy(mqtt_user, json["mqtt_user"]);
+          strcpy(mqtt_password, json["mqtt_password"]);
           strcpy(device_name, json["device_name"]);
           strcpy(open_close_timeout, json["open_close_timeout"]);
           openAndClosingTimeout = atoi(open_close_timeout);
@@ -492,6 +515,65 @@ void deviceRegistration()
   Serial.println(client.publish(MQTT_TOPIC_REGISTRATION, jsonChar));
 }
 
+void reconnectToMqtt()
+{
+  Serial.print("trying to connect to MQTT server (");
+  Serial.print(device_name);
+
+  client.setCallback(mqttCallback);
+  client.setServer(mqtt_server, atoi(mqtt_port));
+
+  analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTING_TO_MQTT);
+
+  boolean connectResult = false;
+
+  if (strlen(mqtt_user) > 0)
+  {
+    Serial.print(", user: ");
+    Serial.print(mqtt_user);
+    connectResult = client.connect(device_name, mqtt_user, mqtt_password);
+  }
+  else
+  {
+    connectResult = client.connect(device_name);
+  }
+  Serial.println(")");
+
+  lastConnectRetry = millis();
+
+  if (connectResult)
+  {
+    Serial.println("Connected to MQTT");
+    mqttFailedBefore = false;
+
+    deviceRegistration();
+    client.subscribe(MQTT_TOPIC_REGISTRATION);
+    strcpy(inTopic, "/homedashboard/");
+    strcat(inTopic, device_name);
+    strcpy(outTopic, inTopic);
+    strcat(inTopic, "/in");
+    strcat(outTopic, "/out");
+
+    client.subscribe(inTopic);
+    Serial.print("Subscribe to ");
+    Serial.println(inTopic);
+    publishState();
+    analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTED);
+  }
+  else
+  {
+    analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
+    if (!mqttFailedBefore)
+    {
+      Serial.print("Failed to connect to MQTT server: ");
+      Serial.print(mqtt_server);
+      Serial.print(", port: ");
+      Serial.println(atoi(mqtt_port));
+    }
+    mqttFailedBefore = true;
+  }
+}
+
 void connectToMqttIfNotConnected()
 {
   if (!client.connected())
@@ -499,55 +581,7 @@ void connectToMqttIfNotConnected()
     long now = millis();
     if (lastConnectRetry + 30000 < now)
     {
-      client.setCallback(mqttCallback);
-      client.setServer(mqtt_server, atoi(mqtt_port));
-
-      analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTING_TO_MQTT);
-
-      boolean connectResult = false;
-
-      if (strlen(mqtt_user) > 0)
-      {
-        connectResult = client.connect(device_name, mqtt_user, mqtt_password);
-      }
-      else
-      {
-        connectResult = client.connect(device_name);
-      }
-
-      if (connectResult)
-      {
-        lastConnectRetry = millis();
-        Serial.println("Connected to MQTT");
-        mqttFailedBefore = false;
-
-        deviceRegistration();
-        client.subscribe(MQTT_TOPIC_REGISTRATION);
-        strcpy(inTopic, "/homedashboard/");
-        strcat(inTopic, device_name);
-        strcpy(outTopic, inTopic);
-        strcat(inTopic, "/in");
-        strcat(outTopic, "/out");
-
-        client.subscribe(inTopic);
-        Serial.print("Subscribe to ");
-        Serial.println(inTopic);
-        publishState();
-        analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_CONNECTED);
-      }
-      else
-      {
-        analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
-        lastConnectRetry = millis();
-        if (!mqttFailedBefore)
-        {
-          Serial.print("Failed to connect to MQTT server: ");
-          Serial.print(mqtt_server);
-          Serial.print(", port: ");
-          Serial.println(atoi(mqtt_port));
-        }
-        mqttFailedBefore = true;
-      }
+      reconnectToMqtt();
     }
   }
   else
@@ -666,20 +700,11 @@ void setup()
   //SPIFFS.format();
 
   //read configuration from FS json
-  Serial.println("mounting FS...");
 
   loadConfig();
 
-  //WiFiManager
-  //Local intialization. Once its business is done, there is no need to keep it around
-
-  //set config save notify callback
   wifiManager.setSaveConfigCallback(saveConfigCallback);
 
-  // set static ip
-  // wifiManager.setSTAStaticIPConfig(IPAddress(10, 0, 1, 99), IPAddress(10, 0, 1, 1), IPAddress(255, 255, 255, 0));
-
-  //add all your parameters here
   wifiManager.addParameter(&custom_mqtt_server);
   wifiManager.addParameter(&custom_mqtt_port);
   wifiManager.addParameter(&custom_mqtt_user);
@@ -699,7 +724,7 @@ void setup()
   else
   {
     Serial.println("connected...");
-    Serial.println("local ip");
+    Serial.print("local ip: ");
     Serial.println(WiFi.localIP());
   }
 
@@ -708,19 +733,24 @@ void setup()
   //save the custom parameters to FS
 }
 
+void reconnectWiFi()
+{
+  if (WiFi.reconnect())
+  {
+    analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
+    Serial.print("successfully reconnected, local ip:");
+    Serial.println(WiFi.localIP());
+    connectToMqttIfNotConnected();
+  }
+}
+
 void loop()
 {
   if (!WiFi.isConnected() && currentState != GD_OPENING && currentState != GD_CLOSING)
   {
     analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_NOT_CONNECTED);
     Serial.println("Wifi connection lost...");
-    if (WiFi.reconnect())
-    {
-      analogWrite(NETWORK_STATUS_PIN, NETWORK_STATUS_ONLY_WIFI);
-      Serial.print("successfully reconnected, local ip:");
-      Serial.println(WiFi.localIP());
-      connectToMqttIfNotConnected();
-    }
+    reconnectWiFi();
   }
   else
   {
