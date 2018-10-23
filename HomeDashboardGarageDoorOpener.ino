@@ -512,7 +512,8 @@ void deviceRegistration()
   Serial.print("Register device (");
   Serial.print(MQTT_TOPIC_REGISTRATION);
   Serial.print("), result: ");
-  Serial.println(client.publish(MQTT_TOPIC_REGISTRATION, jsonChar));
+  Serial.println(client.publish(MQTT_TOPIC_REGISTRATION, jsonChar, false));
+  jsonBuffer.clear();
 }
 
 void reconnectToMqtt()
@@ -527,17 +528,25 @@ void reconnectToMqtt()
 
   boolean connectResult = false;
 
+  JsonObject &json = jsonBuffer.createObject();
+  json["name"] = device_name;
+  json["type"] = "Gate";
+  json["offline"] = true;
+  char jsonChar[200];
+  json.printTo((char *)jsonChar, json.measureLength() + 1);
+  
   if (strlen(mqtt_user) > 0)
   {
     Serial.print(", user: ");
     Serial.print(mqtt_user);
-    connectResult = client.connect(device_name, mqtt_user, mqtt_password);
+    connectResult = client.connect(device_name, mqtt_user, mqtt_password, MQTT_TOPIC_REGISTRATION, 1, true, jsonChar);
   }
   else
   {
-    connectResult = client.connect(device_name);
+    connectResult = client.connect(device_name, MQTT_TOPIC_REGISTRATION, 1, true, jsonChar);
   }
   Serial.println(")");
+  jsonBuffer.clear();
 
   lastConnectRetry = millis();
 
@@ -605,9 +614,10 @@ void publishState()
     json["light"] = lamp ? true : false;
     json["photocell"] = obstacleOnPhotocell ? true : false;
 
-    char jsonChar[200];
-    json.printTo((char *)jsonChar, json.measureLength() + 1);
-    int result = client.publish(outTopic, jsonChar, json.measureLength());
+    char jsonChar[250];
+    unsigned int plength = json.measureLength();
+    json.printTo((char *)jsonChar, plength + 1);
+    int result = client.publish(outTopic, (const uint8_t*)jsonChar, plength, false);
 
     // Serial.print("publish state to topic:");
     // Serial.print(outTopic);
@@ -698,7 +708,7 @@ void setup()
 
   //clean FS, for testing
   //SPIFFS.format();
-
+  //wifiManager.resetSettings();
   //read configuration from FS json
 
   loadConfig();
